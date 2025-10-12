@@ -148,7 +148,7 @@ pub struct Eip7683OrderData {
 ///
 /// Outputs define the tokens and amounts that should be received by recipients
 /// as a result of executing the cross-chain order.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MandateOutput {
 	/// Oracle implementation responsible for collecting proof (bytes32)
 	/// Zero value indicates same-chain or default oracle
