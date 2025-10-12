@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 pub mod implementations {
 	pub mod onchain {
 		pub mod _7683;
+		pub mod shinobi;
 	}
 	pub mod offchain {
 		pub mod _7683;
@@ -107,6 +108,10 @@ pub fn get_all_implementations() -> Vec<(&'static str, DiscoveryFactory)> {
 		(
 			offchain::_7683::Registry::NAME,
 			offchain::_7683::Registry::factory(),
+		),
+		(
+			onchain::shinobi::Registry::NAME,
+			onchain::shinobi::Registry::factory(),
 		),
 	]
 }
