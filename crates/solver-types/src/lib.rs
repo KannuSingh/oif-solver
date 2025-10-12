@@ -56,6 +56,7 @@ pub use secret_string::SecretString;
 pub use standards::{
 	eip7683::{Eip7683OrderData, MandateOutput as Eip7683Output},
 	eip7930::{InteropAddress, InteropAddressError},
+	shinobi::{IShinobiInputSettler, IShinobiOutputSettler, ShinobiIntent, ShinobiIntentSol},
 };
 pub use storage::*;
 pub use utils::{
