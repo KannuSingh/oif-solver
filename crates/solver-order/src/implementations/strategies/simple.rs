@@ -105,8 +105,13 @@ impl ExecutionStrategy for SimpleStrategy {
 							String::new()
 						});
 
-					// Build the balance key (chain_id, Some(token_address))
-					let balance_key = (chain_id, Some(token_address.clone()));
+					// Build the balance key
+					// For native ETH (0x0000...0000), use None; for ERC20, use Some(address)
+					let balance_key = if token_address == "0000000000000000000000000000000000000000" || token_address.is_empty() {
+						(chain_id, None)
+					} else {
+						(chain_id, Some(token_address.clone()))
+					};
 
 					// Check if we have the balance for this token
 					if let Some(balance_str) = context.solver_balances.get(&balance_key) {
