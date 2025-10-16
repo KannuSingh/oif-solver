@@ -11,4 +11,4 @@ pub mod intent;
 pub mod settler;
 
 pub use intent::ShinobiIntent;
-pub use settler::{IShinobiInputSettler, IShinobiOutputSettler, ShinobiIntentSol};
+pub use settler::{IShinobiInputSettler, IShinobiOutputSettler, ShinobiIntentSol, SolveParams};

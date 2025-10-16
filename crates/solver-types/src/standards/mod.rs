@@ -20,4 +20,4 @@ pub mod shinobi;
 
 // Re-export commonly used types for convenience
 pub use eip7683::{Eip7683OrderData, MandateOutput as Eip7683Output};
-pub use shinobi::{IShinobiInputSettler, IShinobiOutputSettler, ShinobiIntent, ShinobiIntentSol};
+pub use shinobi::{IShinobiInputSettler, IShinobiOutputSettler, ShinobiIntent, ShinobiIntentSol, SolveParams};

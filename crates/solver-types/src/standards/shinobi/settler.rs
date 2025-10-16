@@ -34,6 +34,13 @@ sol! {
 		bytes context;
 	}
 
+	/// Solve parameters for standard OIF tracking
+	#[derive(Debug, PartialEq, Eq)]
+	struct SolveParams {
+		uint32 timestamp;
+		bytes32 solver;
+	}
+
 	/// Interface for Shinobi Input Settler (origin chain - escrow side)
 	#[sol(rpc)]
 	interface IShinobiInputSettler {
@@ -49,8 +56,8 @@ sol! {
 		/// Open an intent and escrow funds
 		function open(ShinobiIntentSol calldata intent) external payable;
 
-		/// Finalize an intent by validating fill proofs and releasing funds to solver
-		function finalise(ShinobiIntentSol calldata intent, bytes[] calldata fillProofs) external;
+		/// Finalize an intent using standard OIF pattern with SolveParams
+		function finalise(ShinobiIntentSol calldata intent, SolveParams[] calldata solveParams, bytes32 destination) external;
 
 		/// Refund an expired intent
 		function refund(ShinobiIntentSol calldata intent) external;
