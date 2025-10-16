@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use solver_types::{
 	current_timestamp,
 	oracle::OracleRoutes,
+	standards::SolveParams,
 	Address, ChainSettlerInfo, ConfigSchema, ExecutionParams, FillProof, IShinobiInputSettler,
 	IShinobiOutputSettler, NetworksConfig, Order, OrderIdCallback, OrderStatus, ShinobiIntent,
 	ShinobiIntentSol, Transaction,
@@ -63,27 +64,41 @@ impl ShinobiOrderImpl {
 			OrderError::ValidationFailed(format!("Invalid Shinobi order config: {}", e))
 		})?;
 
-		// Parse settler addresses
+		// Parse settler addresses and chain IDs (TOML keys are strings)
 		let mut input_settlers = HashMap::new();
-		for (chain_id, addr_str) in &cfg.input_settlers {
+		for (chain_id_str, addr_str) in &cfg.input_settlers {
+			let chain_id = chain_id_str.parse::<u64>().map_err(|e| {
+				OrderError::ValidationFailed(format!(
+					"Invalid chain ID '{}': {}",
+					chain_id_str, e
+				))
+			})?;
+
 			let addr = addr_str.parse::<AlloyAddress>().map_err(|e| {
 				OrderError::ValidationFailed(format!(
 					"Invalid input settler address for chain {}: {}",
 					chain_id, e
 				))
 			})?;
-			input_settlers.insert(*chain_id, addr);
+			input_settlers.insert(chain_id, addr);
 		}
 
 		let mut output_settlers = HashMap::new();
-		for (chain_id, addr_str) in &cfg.output_settlers {
+		for (chain_id_str, addr_str) in &cfg.output_settlers {
+			let chain_id = chain_id_str.parse::<u64>().map_err(|e| {
+				OrderError::ValidationFailed(format!(
+					"Invalid chain ID '{}': {}",
+					chain_id_str, e
+				))
+			})?;
+
 			let addr = addr_str.parse::<AlloyAddress>().map_err(|e| {
 				OrderError::ValidationFailed(format!(
 					"Invalid output settler address for chain {}: {}",
 					chain_id, e
 				))
 			})?;
-			output_settlers.insert(*chain_id, addr);
+			output_settlers.insert(chain_id, addr);
 		}
 
 		// Validate at least one settler configured
@@ -272,17 +287,26 @@ impl OrderInterface for ShinobiOrderImpl {
 		// Convert intent to Solidity format
 		let sol_intent: ShinobiIntentSol = intent.into();
 
-		// Build fill proof array from attestation_data
-		let fill_proofs = if let Some(attestation) = &fill_proof.attestation_data {
-			vec![Bytes::from(attestation.clone())]
-		} else {
-			vec![]
-		};
+		// Build SolveParams from fill_proof (STANDARD OIF PATTERN)
+		// For Shinobi, we have one output, so one SolveParams entry
+		let solver_address = order.solver_address.0.clone();
+		let mut solver_bytes32 = [0u8; 32];
+		solver_bytes32[12..32].copy_from_slice(&solver_address);
 
-		// Encode finalise call: IShinobiInputSettler.finalise(intent, fillProofs)
+		let solve_params = vec![SolveParams {
+			timestamp: (fill_proof.filled_timestamp as u32),
+			solver: solver_bytes32.into(),
+		}];
+
+		// Destination is the solver address (send funds to solver)
+		let destination: [u8; 32] = solver_bytes32;
+
+		// Encode finalise call: IShinobiInputSettler.finalise(intent, solveParams, destination)
+		// Using the new secure signature with SolveParams
 		let finalise_data = IShinobiInputSettler::finaliseCall {
 			intent: sol_intent,
-			fillProofs: fill_proofs,
+			solveParams: solve_params,
+			destination: destination.into(),
 		}
 		.abi_encode();
 
@@ -351,25 +375,37 @@ impl OrderInterface for ShinobiOrderImpl {
 
 		let order_id = format!("0x{}", hex::encode(&order_id_bytes));
 
-		// Build data JSON with order_bytes, lock_type, and intent_data
-		let mut data_map = serde_json::Map::new();
-		data_map.insert(
-			"order_bytes".to_string(),
-			serde_json::Value::String(format!("0x{}", hex::encode(order_bytes))),
-		);
-		data_map.insert(
-			"lock_type".to_string(),
-			serde_json::Value::String(lock_type.to_string()),
-		);
-		if let Some(intent_data_val) = intent_data {
-			data_map.insert("intent_data".to_string(), intent_data_val.clone());
-		}
+		// Use existing ShinobiIntent from intent_data if available, otherwise use decoded intent
+		// This follows the same pattern as EIP-7683
+		let order_data = match intent_data {
+			Some(data) => {
+				// Try to parse as ShinobiIntent
+				match serde_json::from_value::<ShinobiIntent>(data.clone()) {
+					Ok(parsed_intent) => parsed_intent,
+					Err(_) => {
+						// Failed to parse - use decoded intent from order_bytes
+						intent
+					},
+				}
+			},
+			None => {
+				// No intent data provided - use decoded intent
+				intent
+			},
+		};
 
-		// Create Order
+		// Create Order with both ShinobiIntent and order_bytes
+		// Unlike EIP-7683, Shinobi needs the original ABI-encoded bytes for transaction building
 		let now = std::time::SystemTime::now()
 			.duration_since(std::time::UNIX_EPOCH)
 			.unwrap()
 			.as_secs();
+
+		// Store both the intent data and order bytes
+		let data = serde_json::json!({
+			"intent": order_data,
+			"order_bytes": format!("0x{}", hex::encode(order_bytes))
+		});
 
 		Ok(Order {
 			id: order_id,
@@ -377,7 +413,7 @@ impl OrderInterface for ShinobiOrderImpl {
 			created_at: now,
 			updated_at: now,
 			status: OrderStatus::Created,
-			data: serde_json::Value::Object(data_map),
+			data,
 			solver_address: solver_address.clone(),
 			quote_id: None,
 			input_chains,
@@ -396,10 +432,10 @@ impl OrderInterface for ShinobiOrderImpl {
 /// Configuration for Shinobi order implementation.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ShinobiOrderConfig {
-	/// Map of chain_id -> InputSettler address
-	pub input_settlers: HashMap<u64, String>,
-	/// Map of chain_id -> OutputSettler address
-	pub output_settlers: HashMap<u64, String>,
+	/// Map of chain_id -> InputSettler address (TOML keys are strings)
+	pub input_settlers: HashMap<String, String>,
+	/// Map of chain_id -> OutputSettler address (TOML keys are strings)
+	pub output_settlers: HashMap<String, String>,
 }
 
 /// Configuration schema for Shinobi order implementation.
