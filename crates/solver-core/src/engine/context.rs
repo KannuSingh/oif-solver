@@ -103,6 +103,7 @@ impl ContextBuilder {
 
 		match intent.standard.as_str() {
 			"eip7683" => self.extract_eip7683_chains(&intent.data),
+			"shinobi" => self.extract_shinobi_chains(&intent.data),
 			_ => {
 				tracing::warn!(
 					standard = %intent.standard,
@@ -184,6 +185,61 @@ impl ContextBuilder {
 		Ok(chains)
 	}
 
+	/// Extracts chain IDs from Shinobi intent data.
+	fn extract_shinobi_chains(&self, data: &serde_json::Value) -> Result<Vec<u64>, SolverError> {
+		let mut chains = Vec::new();
+
+		// For Shinobi orders, the intent data structure is:
+		// { "intent": ShinobiIntent, "order_bytes": "0x..." }
+		// Extract the intent object first
+		let intent_data = data.get("intent").unwrap_or(data);
+
+		// Helper function to parse chain ID from either string or number, supporting hex
+		let parse_chain_id = |value: &serde_json::Value| -> Option<u64> {
+			match value {
+				serde_json::Value::Number(n) => n.as_u64(),
+				serde_json::Value::String(s) => {
+					if let Some(hex_str) = s.strip_prefix("0x") {
+						u64::from_str_radix(hex_str, 16).ok()
+					} else {
+						s.parse::<u64>().ok()
+					}
+				},
+				_ => None,
+			}
+		};
+
+		// Extract origin_chain_id from intent_data
+		if let Some(origin_chain_value) = intent_data.get("origin_chain_id") {
+			if let Some(origin_chain) = parse_chain_id(origin_chain_value) {
+				chains.push(origin_chain);
+			}
+		}
+
+		// Extract from outputs array
+		if let Some(outputs) = intent_data.get("outputs").and_then(|v| v.as_array()) {
+			for output in outputs.iter() {
+				if let Some(chain_id_value) = output.get("chain_id") {
+					if let Some(chain_id) = parse_chain_id(chain_id_value) {
+						chains.push(chain_id);
+					}
+				}
+			}
+		}
+
+		// Remove duplicates and sort
+		chains.sort_unstable();
+		chains.dedup();
+
+		if chains.is_empty() {
+			return Err(SolverError::Service(
+				"No chains found in Shinobi intent data".to_string(),
+			));
+		}
+
+		Ok(chains)
+	}
+
 	/// Fetches solver balances for all relevant chains and tokens.
 	///
 	/// This method gets the solver's balance for both native tokens and
@@ -245,10 +301,12 @@ impl ContextBuilder {
 	/// Gets token addresses for a given chain from the token manager.
 	///
 	/// Returns addresses of tokens configured for this chain.
+	/// Filters out native tokens (0x0000...0000) since they're fetched separately.
 	fn get_common_tokens_for_chain(&self, chain_id: u64) -> Vec<String> {
 		self.token_manager
 			.get_tokens_for_chain(chain_id)
 			.into_iter()
+			.filter(|token| token.address.0 != [0u8; 20]) // Skip native tokens
 			.map(|token| hex::encode(&token.address.0))
 			.collect()
 	}

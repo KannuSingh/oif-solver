@@ -5,6 +5,7 @@
 //! cross-chain operations.
 
 use crate::standards::eip7683::MandateOutput;
+use crate::{AvailableInput, InteropAddress, OrderParsable, RequestedOutput};
 use alloy_primitives::{keccak256, Address, Bytes, U256};
 use alloy_sol_types::SolValue;
 use serde::{Deserialize, Serialize};
@@ -130,7 +131,7 @@ impl ShinobiIntent {
 	/// - User address is not zero
 	/// - At least one input exists
 	/// - At least one output exists
-	/// - Intent oracle is not zero
+	/// - Intent oracle is not zero (except for crosschain intents where it can be zero)
 	/// - Fill oracle is not zero
 	/// - Refund calldata can be empty (valid for simple refunds)
 	///
@@ -149,9 +150,11 @@ impl ShinobiIntent {
 		if self.outputs.is_empty() {
 			return Err("Invalid outputs: must have at least one output".into());
 		}
-		if self.intent_oracle == Address::ZERO {
-			return Err("Invalid intent oracle: zero address".into());
-		}
+
+		// Intent oracle can be zero for crosschain withdrawals (optimistic settlement).
+		// For crosschain deposits, intent_oracle != 0 and must be validated by the solver.
+		// The OutputSettler contract handles this distinction based on intent_oracle value.
+
 		if self.fill_oracle == Address::ZERO {
 			return Err("Invalid fill oracle: zero address".into());
 		}
@@ -375,5 +378,95 @@ mod tests {
 		};
 
 		assert!(!erc20_intent.is_native_eth_output());
+	}
+}
+
+// Implement OrderParsable trait for ShinobiIntent
+impl OrderParsable for ShinobiIntent {
+	fn parse_available_inputs(&self) -> Vec<AvailableInput> {
+		use crate::{bytes32_to_address, parse_address, Address as SolverAddress};
+
+		self.inputs
+			.iter()
+			.map(|input| {
+				let token_id = input[0];
+				let amount = input[1];
+
+				// For Shinobi, token_id in inputs array represents the token address
+				// token_id == 0 means native ETH
+				let token_bytes = token_id.to_be_bytes::<32>();
+				let token_address_hex = bytes32_to_address(&token_bytes);
+				let token_addr =
+					parse_address(&token_address_hex).unwrap_or(SolverAddress(vec![0u8; 20]));
+
+				// Create interop addresses
+				let asset = InteropAddress::from((self.origin_chain_id, token_addr));
+				let user = InteropAddress::from((self.origin_chain_id, SolverAddress(self.user.0.to_vec())));
+
+				AvailableInput {
+					user,
+					asset,
+					amount,
+					lock: None, // Shinobi uses escrow, not explicit locks
+				}
+			})
+			.collect()
+	}
+
+	fn parse_requested_outputs(&self) -> Vec<RequestedOutput> {
+		use crate::{bytes32_to_address, parse_address, Address as SolverAddress};
+
+		self.outputs
+			.iter()
+			.map(|output| {
+				let chain_id: u64 = output.chain_id.try_into().unwrap_or(0);
+
+				// Convert bytes32 token address to Address
+				let token_address_hex = bytes32_to_address(&output.token);
+				let token_addr =
+					parse_address(&token_address_hex).unwrap_or(SolverAddress(vec![0u8; 20]));
+
+				// Convert bytes32 recipient address to Address
+				let recipient_address_hex = bytes32_to_address(&output.recipient);
+				let recipient_addr =
+					parse_address(&recipient_address_hex).unwrap_or(SolverAddress(vec![0u8; 20]));
+
+				// Create interop addresses
+				let asset = InteropAddress::from((chain_id, token_addr));
+				let receiver = InteropAddress::from((chain_id, recipient_addr));
+
+				RequestedOutput {
+					receiver,
+					asset,
+					amount: output.amount,
+					calldata: if output.call.is_empty() {
+						None
+					} else {
+						Some(hex::encode(&output.call))
+					},
+				}
+			})
+			.collect()
+	}
+
+	fn parse_lock_type(&self) -> Option<String> {
+		// Shinobi always uses native escrow for cross-chain operations
+		Some("native_escrow".to_string())
+	}
+
+	fn input_oracle(&self) -> String {
+		// Return the fill oracle address (validates fills on destination chain)
+		format!("0x{}", hex::encode(self.fill_oracle.as_slice()))
+	}
+
+	fn origin_chain_id(&self) -> u64 {
+		self.origin_chain_id
+	}
+
+	fn destination_chain_ids(&self) -> Vec<u64> {
+		self.outputs
+			.iter()
+			.map(|output| output.chain_id.try_into().unwrap_or(0u64))
+			.collect()
 	}
 }

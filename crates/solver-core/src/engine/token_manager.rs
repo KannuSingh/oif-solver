@@ -115,6 +115,16 @@ impl TokenManager {
 
 		for (chain_id, network) in &self.networks {
 			for token in &network.tokens {
+				// Skip native tokens (address 0x0000...0000) - they don't need approvals
+				if token.address.0 == [0u8; 20] {
+					tracing::debug!(
+						"Skipping approval for native token {} on chain {}",
+						token.symbol,
+						chain_id
+					);
+					continue;
+				}
+
 				// Process input settler if not zero address
 				if network.input_settler_address.0 != [0u8; 20] {
 					// Check allowance for input settler
@@ -251,12 +261,20 @@ impl TokenManager {
 
 		for (chain_id, network) in &self.networks {
 			for token in &network.tokens {
+				// For native tokens (0x0000...0000), pass None to get_balance
+				// For ERC20 tokens, pass the token address
+				let token_param = if token.address.0 == [0u8; 20] {
+					None
+				} else {
+					Some(hex::encode(&token.address.0))
+				};
+
 				let balance = self
 					.delivery
 					.get_balance(
 						*chain_id,
 						&solver_address_str,
-						Some(&hex::encode(&token.address.0)),
+						token_param.as_deref(),
 					)
 					.await?;
 
@@ -288,12 +306,20 @@ impl TokenManager {
 		let solver_address = self.account.get_address().await?;
 		let solver_address_str = hex::encode(&solver_address.0);
 
+		// For native tokens (0x0000...0000), pass None to get_balance
+		// For ERC20 tokens, pass the token address
+		let token_param = if token_address.0 == [0u8; 20] {
+			None
+		} else {
+			Some(hex::encode(&token_address.0))
+		};
+
 		let balance = self
 			.delivery
 			.get_balance(
 				chain_id,
 				&solver_address_str,
-				Some(&hex::encode(&token_address.0)),
+				token_param.as_deref(),
 			)
 			.await?;
 
