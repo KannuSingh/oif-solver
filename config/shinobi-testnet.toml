@@ -1,0 +1,138 @@
+# Shinobi Cash Testnet Solver Configuration
+# Arbitrum Sepolia (pool) <-> Base Sepolia (deposits)
+
+[solver]
+id = "shinobi-testnet-solver"
+monitoring_timeout_minutes = 5
+min_profitability_pct = 0.0
+
+# Network configurations (use chain IDs as keys)
+[networks."421614"]
+chain_id = 421614
+input_settler_address = "0xcfE8B62927E910b5dfB002e19786302803A49390"
+output_settler_address = "0x474e9d905219DF4A47c17Fc23df8f2d486DbC375"
+
+[[networks."421614".rpc_urls]]
+http = "https://sepolia-rollup.arbitrum.io/rpc"
+
+[[networks."421614".tokens]]
+address = "0x0000000000000000000000000000000000000000"
+symbol = "ETH"
+decimals = 18
+
+[networks."84532"]
+chain_id = 84532
+input_settler_address = "0x191Bee1b68b8D0E20cD7bBa51ab3BAe86c8C43C4"
+output_settler_address = "0x55A6f22EeFcc1715879C827534396519275AD9D3"
+
+[[networks."84532".rpc_urls]]
+http = "https://sepolia.base.org"
+
+[[networks."84532".tokens]]
+address = "0x0000000000000000000000000000000000000000"
+symbol = "ETH"
+decimals = 18
+
+# ============================================================================
+# STORAGE
+# ============================================================================
+[storage]
+primary = "file"
+cleanup_interval_seconds = 3600
+
+[storage.implementations.memory]
+# Memory storage has no configuration
+
+[storage.implementations.file]
+storage_path = "./data/shinobi-storage"
+ttl_orders = 0
+ttl_intents = 86400
+ttl_order_by_tx_hash = 86400
+
+# ============================================================================
+# ACCOUNT
+# ============================================================================
+[account]
+primary = "local"
+
+[account.implementations.local]
+private_key = "${SOLVER_PRIVATE_KEY}"
+
+# ============================================================================
+# DELIVERY
+# ============================================================================
+[delivery]
+min_confirmations = 3
+transaction_poll_interval_seconds = 3
+
+[delivery.implementations.evm_alloy]
+network_ids = [421614, 84532]
+
+# ============================================================================
+# DISCOVERY
+# ============================================================================
+[discovery]
+
+[discovery.implementations.shinobi]
+lock_type = "native_escrow"
+polling_interval_secs = 12
+input_settlers = { 421614 = "0xcfE8B62927E910b5dfB002e19786302803A49390", 84532 = "0x191Bee1b68b8D0E20cD7bBa51ab3BAe86c8C43C4" }
+# Optional: Start blocks for initial historical sync (set to deployment block - 1)
+start_blocks = { 421614 = 204889531 }
+
+# ============================================================================
+# ORDER
+# ============================================================================
+[order]
+
+[order.implementations.shinobi]
+input_settlers = { 421614 = "0xcfE8B62927E910b5dfB002e19786302803A49390", 84532 = "0x191Bee1b68b8D0E20cD7bBa51ab3BAe86c8C43C4" }
+output_settlers = { 421614 = "0x474e9d905219DF4A47c17Fc23df8f2d486DbC375", 84532 = "0x55A6f22EeFcc1715879C827534396519275AD9D3" }
+
+[order.strategy]
+primary = "simple"
+
+[order.strategy.implementations.simple]
+max_gas_price_gwei = 100
+
+# ============================================================================
+# PRICING
+# ============================================================================
+[pricing]
+primary = "mock"
+
+[pricing.implementations.mock]
+
+# ============================================================================
+# SETTLEMENT
+# ============================================================================
+[settlement]
+settlement_poll_interval_seconds = 10
+
+[settlement.domain]
+chain_id = 421614
+address = "0xcfE8B62927E910b5dfB002e19786302803A49390"
+
+[settlement.implementations.direct]
+order = "shinobi"
+network_ids = [421614, 84532]
+dispute_period_seconds = 0
+oracle_selection_strategy = "First"
+
+[settlement.implementations.direct.oracles]
+input = { 421614 = ["0x4cb20f4415d3666e5d92e261de98fc9b7843d036"], 84532 = ["0x52Fe5095D9458396e2926d89BC7730DDd2C81404"] }
+output = { 421614 = ["0x4cb20f4415d3666e5d92e261de98fc9b7843d036"], 84532 = ["0x52Fe5095D9458396e2926d89BC7730DDd2C81404"] }
+
+[settlement.implementations.direct.routes]
+421614 = [84532]
+84532 = [421614]
+
+# ============================================================================
+# API
+# ============================================================================
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 3000
+timeout_seconds = 30
+max_request_size = 1048576
