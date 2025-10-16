@@ -233,6 +233,15 @@ impl Order {
 					.map_err(|e| format!("Failed to parse EIP-7683 order data: {}", e))?;
 				Ok(Box::new(order_data))
 			},
+			"shinobi" => {
+				// For Shinobi orders, extract the intent from the data structure
+				// Data structure: { "intent": ShinobiIntent, "order_bytes": "0x..." }
+				let intent_value = self.data.get("intent")
+					.ok_or("Missing intent field in Shinobi order data")?;
+				let order_data: crate::ShinobiIntent = serde_json::from_value(intent_value.clone())
+					.map_err(|e| format!("Failed to parse Shinobi intent data: {}", e))?;
+				Ok(Box::new(order_data))
+			},
 			_ => Err(format!("Unsupported order standard: {}", self.standard).into()),
 		}
 	}
