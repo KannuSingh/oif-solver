@@ -41,8 +41,8 @@ enum ProviderType {
 /// Supports monitoring multiple chains concurrently using either HTTP polling
 /// or WebSocket subscriptions (when polling_interval_secs = 0).
 pub struct ShinobiDiscovery {
-	/// RPC providers for each monitored network.
-	providers: HashMap<u64, ProviderType>,
+	/// RPC providers for each monitored network (lazily initialized).
+	providers: Arc<Mutex<HashMap<u64, ProviderType>>>,
 	/// The chain IDs being monitored.
 	network_ids: Vec<u64>,
 	/// Networks configuration.
@@ -61,6 +61,12 @@ pub struct ShinobiDiscovery {
 	polling_interval_secs: u64,
 	/// Lock type for discovered intents.
 	lock_type: String,
+	/// Flag indicating if providers have been initialized.
+	providers_initialized: Arc<AtomicBool>,
+	/// Optional start blocks for initial historical sync.
+	start_blocks: HashMap<u64, u64>,
+	/// Flag indicating if initial sync has been completed.
+	sync_completed: Arc<AtomicBool>,
 }
 
 impl ShinobiDiscovery {
@@ -71,11 +77,13 @@ impl ShinobiDiscovery {
 	/// * `networks` - Network configuration
 	/// * `polling_interval_secs` - Polling interval (0 = WebSocket mode)
 	/// * `lock_type` - Lock type for intents (typically "native_escrow")
-	pub async fn new(
+	/// * `start_blocks` - Optional start blocks for initial historical sync
+	pub fn new(
 		input_settlers: HashMap<u64, AlloyAddress>,
 		networks: NetworksConfig,
 		polling_interval_secs: Option<u64>,
 		lock_type: String,
+		start_blocks: HashMap<u64, u64>,
 	) -> Result<Self, DiscoveryError> {
 		// Validate at least one settler configured
 		if input_settlers.is_empty() {
@@ -86,103 +94,143 @@ impl ShinobiDiscovery {
 
 		let network_ids: Vec<u64> = input_settlers.keys().copied().collect();
 		let interval = polling_interval_secs.unwrap_or(DEFAULT_POLLING_INTERVAL_SECS);
-		let use_websocket = interval == 0;
 
-		// Create providers and get initial blocks
-		let mut providers = HashMap::new();
-		let mut last_blocks = HashMap::new();
-
+		// Validate networks exist
 		for network_id in &network_ids {
-			// Validate network exists
-			let network = networks.get(network_id).ok_or_else(|| {
+			networks.get(network_id).ok_or_else(|| {
 				DiscoveryError::ValidationError(format!(
 					"Network {} not found in configuration",
 					network_id
 				))
 			})?;
-
-			if use_websocket {
-				// WebSocket mode
-				let ws_url = network.get_ws_url().ok_or_else(|| {
-					DiscoveryError::Connection(format!(
-						"No WebSocket RPC URL configured for network {}",
-						network_id
-					))
-				})?;
-
-				tracing::info!(
-					"Creating WebSocket provider for Shinobi discovery on network {}: {}",
-					network_id,
-					ws_url
-				);
-
-				let ws_connect = WsConnect::new(ws_url.to_string());
-				let provider = ProviderBuilder::new()
-					.with_recommended_fillers()
-					.on_ws(ws_connect)
-					.await
-					.map_err(|e| {
-						DiscoveryError::Connection(format!(
-							"Failed to connect to WebSocket for network {}: {}",
-							network_id, e
-						))
-					})?;
-
-				let root_provider = provider.root().clone();
-				providers.insert(*network_id, ProviderType::WebSocket(root_provider));
-			} else {
-				// HTTP polling mode
-				let http_url = network.get_http_url().ok_or_else(|| {
-					DiscoveryError::Connection(format!(
-						"No HTTP RPC URL configured for network {}",
-						network_id
-					))
-				})?;
-
-				tracing::info!(
-					"Creating HTTP provider for Shinobi discovery on network {}: {}",
-					network_id,
-					http_url
-				);
-
-				let provider = RootProvider::new_http(http_url.parse().map_err(|e| {
-					DiscoveryError::Connection(format!(
-						"Invalid RPC URL for network {}: {}",
-						network_id, e
-					))
-				})?);
-
-				// Get current block number
-				let current_block = provider.get_block_number().await.map_err(|e| {
-					DiscoveryError::Connection(format!(
-						"Failed to get block number for network {}: {}",
-						network_id, e
-					))
-				})?;
-
-				providers.insert(*network_id, ProviderType::Http(provider));
-				last_blocks.insert(*network_id, current_block);
-
-				tracing::info!(
-					"Initialized Shinobi discovery for network {} at block {}",
-					network_id,
-					current_block
-				);
-			}
 		}
 
 		Ok(Self {
-			providers,
+			providers: Arc::new(Mutex::new(HashMap::new())),
 			network_ids,
 			networks,
 			input_settlers,
-			last_blocks: Arc::new(Mutex::new(last_blocks)),
+			last_blocks: Arc::new(Mutex::new(HashMap::new())),
 			is_monitoring: Arc::new(AtomicBool::new(false)),
 			monitoring_handles: Arc::new(Mutex::new(Vec::new())),
 			stop_signal: Arc::new(Mutex::new(None)),
 			polling_interval_secs: interval,
 			lock_type,
+			providers_initialized: Arc::new(AtomicBool::new(false)),
+			start_blocks,
+			sync_completed: Arc::new(AtomicBool::new(false)),
 		})
+	}
+
+	/// Initialize providers (called lazily on first start_monitoring).
+	async fn initialize_providers(&self) -> Result<(), DiscoveryError> {
+		if self
+			.providers_initialized
+			.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+			.is_ok()
+		{
+			let use_websocket = self.polling_interval_secs == 0;
+			let mut providers = self.providers.lock().await;
+			let mut last_blocks = self.last_blocks.lock().await;
+
+			for network_id in &self.network_ids {
+				let network = self.networks.get(network_id).ok_or_else(|| {
+					DiscoveryError::ValidationError(format!(
+						"Network {} not found in configuration",
+						network_id
+					))
+				})?;
+
+				if use_websocket {
+					// WebSocket mode
+					let ws_url = network.get_ws_url().ok_or_else(|| {
+						DiscoveryError::Connection(format!(
+							"No WebSocket RPC URL configured for network {}",
+							network_id
+						))
+					})?;
+
+					tracing::info!(
+						"Creating WebSocket provider for Shinobi discovery on network {}: {}",
+						network_id,
+						ws_url
+					);
+
+					let ws_connect = WsConnect::new(ws_url.to_string());
+					let provider = ProviderBuilder::new()
+						.with_recommended_fillers()
+						.on_ws(ws_connect)
+						.await
+						.map_err(|e| {
+							DiscoveryError::Connection(format!(
+								"Failed to connect to WebSocket for network {}: {}",
+								network_id, e
+							))
+						})?;
+
+					let root_provider = provider.root().clone();
+					providers.insert(*network_id, ProviderType::WebSocket(root_provider));
+				} else {
+					// HTTP polling mode
+					let http_url = network.get_http_url().ok_or_else(|| {
+						DiscoveryError::Connection(format!(
+							"No HTTP RPC URL configured for network {}",
+							network_id
+						))
+					})?;
+
+					tracing::info!(
+						"Creating HTTP provider for Shinobi discovery on network {}: {}",
+						network_id,
+						http_url
+					);
+
+					let provider = RootProvider::new_http(http_url.parse().map_err(|e| {
+						DiscoveryError::Connection(format!(
+							"Invalid RPC URL for network {}: {}",
+							network_id, e
+						))
+					})?);
+
+					// Get current block number
+					let current_block = provider.get_block_number().await.map_err(|e| {
+						DiscoveryError::Connection(format!(
+							"Failed to get block number for network {}: {}",
+							network_id, e
+						))
+					})?;
+
+					// Use start_block if configured, otherwise use current block
+					let initial_block = if let Some(start_block) = self.start_blocks.get(network_id) {
+						tracing::info!(
+							"Using configured start_block {} for network {} (current: {})",
+							start_block,
+							network_id,
+							current_block
+						);
+						*start_block
+					} else {
+						tracing::info!(
+							"No start_block configured for network {}, starting from current block {}",
+							network_id,
+							current_block
+						);
+						current_block
+					};
+
+					providers.insert(*network_id, ProviderType::Http(provider));
+					last_blocks.insert(*network_id, initial_block);
+
+					tracing::info!(
+						"Initialized Shinobi discovery for network {} at block {}",
+						network_id,
+						initial_block
+					);
+				}
+			}
+		}
+
+		Ok(())
 	}
 
 	/// Convert Solidity ShinobiIntent event data to solver Intent type.
@@ -410,6 +458,9 @@ impl DiscoveryInterface for ShinobiDiscovery {
 
 		tracing::info!("Starting Shinobi intent discovery monitoring");
 
+		// Initialize providers if not already done
+		self.initialize_providers().await?;
+
 		// Create broadcast channel for stop signal
 		let (stop_tx, _) = broadcast::channel(1);
 		*self.stop_signal.lock().await = Some(stop_tx.clone());
@@ -429,7 +480,8 @@ impl DiscoveryInterface for ShinobiDiscovery {
 				})?
 				.clone();
 
-			let provider = self.providers.get(network_id).ok_or_else(|| {
+			let providers = self.providers.lock().await;
+			let provider = providers.get(network_id).ok_or_else(|| {
 				DiscoveryError::Connection(format!("No provider for network {}", network_id))
 			})?;
 
@@ -505,7 +557,7 @@ impl DiscoveryInterface for ShinobiDiscovery {
 impl Clone for ShinobiDiscovery {
 	fn clone(&self) -> Self {
 		Self {
-			providers: HashMap::new(), // Providers are not cloneable, will be unused in clone
+			providers: Arc::clone(&self.providers),
 			network_ids: self.network_ids.clone(),
 			networks: self.networks.clone(),
 			input_settlers: self.input_settlers.clone(),
@@ -515,6 +567,9 @@ impl Clone for ShinobiDiscovery {
 			stop_signal: Arc::clone(&self.stop_signal),
 			polling_interval_secs: self.polling_interval_secs,
 			lock_type: self.lock_type.clone(),
+			providers_initialized: Arc::clone(&self.providers_initialized),
+			start_blocks: self.start_blocks.clone(),
+			sync_completed: Arc::clone(&self.sync_completed),
 		}
 	}
 }
@@ -533,12 +588,18 @@ impl ConfigSchema for ShinobiDiscoveryConfigSchema {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ShinobiDiscoveryConfig {
 	/// Map of chain_id -> InputSettler address (as hex string)
-	pub input_settlers: HashMap<u64, String>,
+	/// TOML keys are always strings, so we use String and parse to u64
+	pub input_settlers: HashMap<String, String>,
 	/// Lock type (typically "native_escrow")
 	pub lock_type: String,
 	/// Polling interval in seconds (0 = WebSocket)
 	#[serde(default)]
 	pub polling_interval_secs: Option<u64>,
+	/// Optional start blocks for initial sync (chain_id -> block_number)
+	/// If provided, the discovery will sync from this block on first run
+	/// After syncing, it continues from the current block normally
+	#[serde(default)]
+	pub start_blocks: Option<HashMap<String, u64>>,
 }
 
 /// Registry implementation for Shinobi discovery.
@@ -557,9 +618,16 @@ impl solver_types::ImplementationRegistry for Registry {
 				DiscoveryError::ValidationError(format!("Invalid Shinobi discovery config: {}", e))
 			})?;
 
-			// Parse addresses
+			// Parse addresses and chain IDs (TOML keys are always strings)
 			let mut input_settlers = HashMap::new();
-			for (chain_id, addr_str) in cfg.input_settlers {
+			for (chain_id_str, addr_str) in cfg.input_settlers {
+				let chain_id = chain_id_str.parse::<u64>().map_err(|e| {
+					DiscoveryError::ValidationError(format!(
+						"Invalid chain ID '{}': {}",
+						chain_id_str, e
+					))
+				})?;
+
 				let addr = addr_str
 					.parse::<AlloyAddress>()
 					.map_err(|e| {
@@ -571,16 +639,28 @@ impl solver_types::ImplementationRegistry for Registry {
 				input_settlers.insert(chain_id, addr);
 			}
 
-			// Create discovery instance
-			let discovery = tokio::runtime::Handle::current().block_on(async {
-				ShinobiDiscovery::new(
-					input_settlers,
-					networks.clone(),
-					cfg.polling_interval_secs,
-					cfg.lock_type.clone(),
-				)
-				.await
-			})?;
+			// Parse start_blocks if provided
+			let mut start_blocks = HashMap::new();
+			if let Some(start_blocks_cfg) = cfg.start_blocks {
+				for (chain_id_str, block_num) in start_blocks_cfg {
+					let chain_id = chain_id_str.parse::<u64>().map_err(|e| {
+						DiscoveryError::ValidationError(format!(
+							"Invalid chain ID '{}' in start_blocks: {}",
+							chain_id_str, e
+						))
+					})?;
+					start_blocks.insert(chain_id, block_num);
+				}
+			}
+
+			// Create discovery instance (now synchronous)
+			let discovery = ShinobiDiscovery::new(
+				input_settlers,
+				networks.clone(),
+				cfg.polling_interval_secs,
+				cfg.lock_type.clone(),
+				start_blocks,
+			)?;
 
 			Ok(Box::new(discovery))
 		}
@@ -628,7 +708,7 @@ mod tests {
 
 		// Create mock discovery config
 		let discovery = ShinobiDiscovery {
-			providers: HashMap::new(),
+			providers: Arc::new(Mutex::new(HashMap::new())),
 			network_ids: vec![1],
 			networks: NetworksConfig::default(),
 			input_settlers: HashMap::new(),
@@ -638,6 +718,9 @@ mod tests {
 			stop_signal: Arc::new(Mutex::new(None)),
 			polling_interval_secs: 3,
 			lock_type: "native_escrow".to_string(),
+			providers_initialized: Arc::new(AtomicBool::new(false)),
+			start_blocks: HashMap::new(),
+			sync_completed: Arc::new(AtomicBool::new(false)),
 		};
 
 		// Test conversion to Intent
