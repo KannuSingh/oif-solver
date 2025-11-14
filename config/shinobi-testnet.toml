@@ -9,8 +9,8 @@ min_profitability_pct = 0.0
 # Network configurations (use chain IDs as keys)
 [networks."421614"]
 chain_id = 421614
-input_settler_address = "0xA47000f80a8c0575FB130B339De77A94096089BF"
-output_settler_address = "0x76f776185E6b5A74e93711dfb74c21D212bF807e"
+input_settler_address = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5"
+output_settler_address = "0x0B44BE1cA20749aa2ac2A4f078188f0E14d9DcA2"
 
 [[networks."421614".rpc_urls]]
 http = "https://sepolia-rollup.arbitrum.io/rpc"
@@ -22,8 +22,8 @@ decimals = 18
 
 [networks."84532"]
 chain_id = 84532
-input_settler_address = "0x11045886FAf1c055cD5A49e90CFBd7f8a56304C3"
-output_settler_address = "0x03088dC01980D659F43fe2C4bf8813554DA4b0D0"
+input_settler_address = "0x9F5f52D0E481BfDA8028F64E7BA2fA76A897237b"
+output_settler_address = "0x621Ca010AE73309cF1FF6E75D53d26BEBCB0cfDe"
 
 [[networks."84532".rpc_urls]]
 http = "https://sepolia.base.org"
@@ -76,9 +76,9 @@ network_ids = [421614, 84532]
 [discovery.implementations.shinobi]
 lock_type = "native_escrow"
 polling_interval_secs = 12
-input_settlers = { 421614 = "0xA47000f80a8c0575FB130B339De77A94096089BF", 84532 = "0x11045886FAf1c055cD5A49e90CFBd7f8a56304C3" }
+input_settlers = { 421614 = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5", 84532 = "0x9F5f52D0E481BfDA8028F64E7BA2fA76A897237b" }
 # Optional: Start blocks for initial historical sync (set to deployment block - 1)
-start_blocks = { 421614 = 209963413, 84532 = 33022414 }
+start_blocks = { 421614 = 214550522, 84532 = 33607221 }
 
 # ============================================================================
 # ORDER
@@ -86,8 +86,8 @@ start_blocks = { 421614 = 209963413, 84532 = 33022414 }
 [order]
 
 [order.implementations.shinobi]
-input_settlers = { 421614 = "0xA47000f80a8c0575FB130B339De77A94096089BF", 84532 = "0x11045886FAf1c055cD5A49e90CFBd7f8a56304C3" }
-output_settlers = { 421614 = "0x76f776185E6b5A74e93711dfb74c21D212bF807e", 84532 = "0x03088dC01980D659F43fe2C4bf8813554DA4b0D0" }
+input_settlers = { 421614 = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5", 84532 = "0x9F5f52D0E481BfDA8028F64E7BA2fA76A897237b" }
+output_settlers = { 421614 = "0x0B44BE1cA20749aa2ac2A4f078188f0E14d9DcA2", 84532 = "0x621Ca010AE73309cF1FF6E75D53d26BEBCB0cfDe" }
 
 [order.strategy]
 primary = "simple"
@@ -111,7 +111,7 @@ settlement_poll_interval_seconds = 10
 
 [settlement.domain]
 chain_id = 421614
-address = "0xA47000f80a8c0575FB130B339De77A94096089BF"
+address = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5"
 
 [settlement.implementations.direct]
 order = "shinobi"
