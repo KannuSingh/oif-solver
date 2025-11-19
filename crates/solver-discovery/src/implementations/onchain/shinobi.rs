@@ -25,6 +25,7 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 const DEFAULT_POLLING_INTERVAL_SECS: u64 = 3;
+const DEFAULT_MAX_BLOCK_RANGE: u64 = 10000;
 
 /// Provider types for different transport modes.
 enum ProviderType {
@@ -59,6 +60,8 @@ pub struct ShinobiDiscovery {
 	stop_signal: Arc<Mutex<Option<broadcast::Sender<()>>>>,
 	/// Polling interval for monitoring loop in seconds (0 = WebSocket mode).
 	polling_interval_secs: u64,
+	/// Maximum block range per query (to avoid RPC limits).
+	max_block_range: u64,
 	/// Lock type for discovered intents.
 	lock_type: String,
 	/// Flag indicating if providers have been initialized.
@@ -78,12 +81,14 @@ impl ShinobiDiscovery {
 	/// * `polling_interval_secs` - Polling interval (0 = WebSocket mode)
 	/// * `lock_type` - Lock type for intents (typically "native_escrow")
 	/// * `start_blocks` - Optional start blocks for initial historical sync
+	/// * `max_block_range` - Maximum block range per query
 	pub fn new(
 		input_settlers: HashMap<u64, AlloyAddress>,
 		networks: NetworksConfig,
 		polling_interval_secs: Option<u64>,
 		lock_type: String,
 		start_blocks: HashMap<u64, u64>,
+		max_block_range: Option<u64>,
 	) -> Result<Self, DiscoveryError> {
 		// Validate at least one settler configured
 		if input_settlers.is_empty() {
@@ -94,6 +99,7 @@ impl ShinobiDiscovery {
 
 		let network_ids: Vec<u64> = input_settlers.keys().copied().collect();
 		let interval = polling_interval_secs.unwrap_or(DEFAULT_POLLING_INTERVAL_SECS);
+		let block_range = max_block_range.unwrap_or(DEFAULT_MAX_BLOCK_RANGE);
 
 		// Validate networks exist
 		for network_id in &network_ids {
@@ -115,6 +121,7 @@ impl ShinobiDiscovery {
 			monitoring_handles: Arc::new(Mutex::new(Vec::new())),
 			stop_signal: Arc::new(Mutex::new(None)),
 			polling_interval_secs: interval,
+			max_block_range: block_range,
 			lock_type,
 			providers_initialized: Arc::new(AtomicBool::new(false)),
 			start_blocks,
@@ -323,32 +330,51 @@ impl ShinobiDiscovery {
 						continue;
 					}
 
-					// Create filter for Open events
-					let filter = Filter::new()
-						.address(settler_address)
-						.event_signature(IShinobiInputSettler::Open::SIGNATURE_HASH)
-						.from_block(last_block + 1)
-						.to_block(current_block);
-
-					// Get logs
-					let logs = match provider.get_logs(&filter).await {
-						Ok(logs) => logs,
-						Err(e) => {
-							tracing::error!("Failed to get logs for chain {}: {}", chain_id, e);
-							continue;
-						}
-					};
-
-					tracing::debug!(
-						"Found {} Shinobi Open events on chain {} (blocks {}-{})",
-						logs.len(),
-						chain_id,
+					tracing::info!(
+						"Processing blocks {}-{} on chain {} ({} blocks)",
 						last_block + 1,
-						current_block
+						current_block,
+						chain_id,
+						current_block - last_block
 					);
 
+					// Process blocks in chunks to avoid RPC limits
+					let mut from_block = last_block + 1;
+					let mut all_logs: Vec<Log> = Vec::new();
+
+					while from_block <= current_block {
+						let to_block = std::cmp::min(from_block + self.max_block_range - 1, current_block);
+
+						// Create filter for Open events
+						let filter = Filter::new()
+							.address(settler_address)
+							.event_signature(IShinobiInputSettler::Open::SIGNATURE_HASH)
+							.from_block(from_block)
+							.to_block(to_block);
+
+						// Get logs
+						let logs = match provider.get_logs(&filter).await {
+							Ok(logs) => logs,
+							Err(e) => {
+								tracing::error!("Failed to get logs for chain {} (blocks {}-{}): {}", chain_id, from_block, to_block, e);
+								break;
+							}
+						};
+
+						tracing::debug!(
+							"Found {} Shinobi Open events on chain {} (blocks {}-{})",
+							logs.len(),
+							chain_id,
+							from_block,
+							to_block
+						);
+
+						all_logs.extend(logs);
+						from_block = to_block + 1;
+					}
+
 					// Process each log
-					for log in logs {
+					for log in all_logs {
 						match self.process_open_event(&log, chain_id).await {
 							Ok(intent) => {
 								tracing::info!(
@@ -566,6 +592,7 @@ impl Clone for ShinobiDiscovery {
 			monitoring_handles: Arc::clone(&self.monitoring_handles),
 			stop_signal: Arc::clone(&self.stop_signal),
 			polling_interval_secs: self.polling_interval_secs,
+			max_block_range: self.max_block_range,
 			lock_type: self.lock_type.clone(),
 			providers_initialized: Arc::clone(&self.providers_initialized),
 			start_blocks: self.start_blocks.clone(),
@@ -595,6 +622,10 @@ pub struct ShinobiDiscoveryConfig {
 	/// Polling interval in seconds (0 = WebSocket)
 	#[serde(default)]
 	pub polling_interval_secs: Option<u64>,
+	/// Maximum block range per query (to avoid RPC limits)
+	/// Default: 10000 blocks
+	#[serde(default)]
+	pub max_block_range: Option<u64>,
 	/// Optional start blocks for initial sync (chain_id -> block_number)
 	/// If provided, the discovery will sync from this block on first run
 	/// After syncing, it continues from the current block normally
@@ -660,6 +691,7 @@ impl solver_types::ImplementationRegistry for Registry {
 				cfg.polling_interval_secs,
 				cfg.lock_type.clone(),
 				start_blocks,
+				cfg.max_block_range,
 			)?;
 
 			Ok(Box::new(discovery))
@@ -717,6 +749,7 @@ mod tests {
 			monitoring_handles: Arc::new(Mutex::new(Vec::new())),
 			stop_signal: Arc::new(Mutex::new(None)),
 			polling_interval_secs: 3,
+			max_block_range: 10000,
 			lock_type: "native_escrow".to_string(),
 			providers_initialized: Arc::new(AtomicBool::new(false)),
 			start_blocks: HashMap::new(),
@@ -772,24 +805,27 @@ mod tests {
 	fn test_config_structure() {
 		// Test that the config struct has the right fields
 		let mut input_settlers = HashMap::new();
-		input_settlers.insert(1, "0x1111111111111111111111111111111111111111".to_string());
-		input_settlers.insert(42161, "0x2222222222222222222222222222222222222222".to_string());
+		input_settlers.insert("1".to_string(), "0x1111111111111111111111111111111111111111".to_string());
+		input_settlers.insert("42161".to_string(), "0x2222222222222222222222222222222222222222".to_string());
 
 		let config = ShinobiDiscoveryConfig {
 			lock_type: "native_escrow".to_string(),
 			polling_interval_secs: Some(5),
+			max_block_range: Some(10000),
 			input_settlers,
+			start_blocks: None,
 		};
 
 		assert_eq!(config.lock_type, "native_escrow");
 		assert_eq!(config.polling_interval_secs, Some(5));
+		assert_eq!(config.max_block_range, Some(10000));
 		assert_eq!(config.input_settlers.len(), 2);
 		assert_eq!(
-			config.input_settlers.get(&1).unwrap(),
+			config.input_settlers.get("1").unwrap(),
 			"0x1111111111111111111111111111111111111111"
 		);
 		assert_eq!(
-			config.input_settlers.get(&42161).unwrap(),
+			config.input_settlers.get("42161").unwrap(),
 			"0x2222222222222222222222222222222222222222"
 		);
 	}
