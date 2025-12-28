@@ -26,6 +26,8 @@ use tokio::task::JoinHandle;
 
 const DEFAULT_POLLING_INTERVAL_SECS: u64 = 3;
 const DEFAULT_MAX_BLOCK_RANGE: u64 = 10000;
+const MAX_INIT_RETRIES: u32 = 3;
+const INIT_RETRY_DELAY_MS: u64 = 1000;
 
 /// Provider types for different transport modes.
 enum ProviderType {
@@ -73,6 +75,48 @@ pub struct ShinobiDiscovery {
 }
 
 impl ShinobiDiscovery {
+	/// Retry helper with exponential backoff for RPC calls during initialization.
+	async fn retry_with_backoff<F, Fut, T, E>(
+		&self,
+		network_id: u64,
+		operation: &str,
+		mut f: F,
+	) -> Result<T, DiscoveryError>
+	where
+		F: FnMut() -> Fut,
+		Fut: std::future::Future<Output = Result<T, E>>,
+		E: std::fmt::Display,
+	{
+		let mut last_error = None;
+		for attempt in 1..=MAX_INIT_RETRIES {
+			match f().await {
+				Ok(result) => return Ok(result),
+				Err(e) => {
+					tracing::warn!(
+						"Attempt {}/{} failed for {} on network {}: {}",
+						attempt,
+						MAX_INIT_RETRIES,
+						operation,
+						network_id,
+						e
+					);
+					last_error = Some(e.to_string());
+					if attempt < MAX_INIT_RETRIES {
+						let delay = INIT_RETRY_DELAY_MS * (1 << (attempt - 1)); // Exponential backoff
+						tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+					}
+				}
+			}
+		}
+		Err(DiscoveryError::Connection(format!(
+			"{} failed for network {} after {} attempts: {}",
+			operation,
+			network_id,
+			MAX_INIT_RETRIES,
+			last_error.unwrap_or_else(|| "unknown error".to_string())
+		)))
+	}
+
 	/// Creates a new Shinobi discovery instance.
 	///
 	/// # Arguments
@@ -199,13 +243,12 @@ impl ShinobiDiscovery {
 						))
 					})?);
 
-					// Get current block number
-					let current_block = provider.get_block_number().await.map_err(|e| {
-						DiscoveryError::Connection(format!(
-							"Failed to get block number for network {}: {}",
-							network_id, e
-						))
-					})?;
+					// Get current block number with retry
+					let current_block = self
+						.retry_with_backoff(*network_id, "get_block_number", || async {
+							provider.get_block_number().await
+						})
+						.await?;
 
 					// Use start_block if configured, otherwise use current block
 					let initial_block = if let Some(start_block) = self.start_blocks.get(network_id) {

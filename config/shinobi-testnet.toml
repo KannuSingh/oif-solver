@@ -78,7 +78,7 @@ lock_type = "native_escrow"
 polling_interval_secs = 12
 input_settlers = { 421614 = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5", 84532 = "0x9F5f52D0E481BfDA8028F64E7BA2fA76A897237b" }
 # Optional: Start blocks for initial historical sync (set to deployment block - 1)
-start_blocks = { 421614 = 214550522, 84532 = 33607221 }
+start_blocks = { 421614 = 22854100, 84532 = 35589200 }
 
 # ============================================================================
 # ORDER
