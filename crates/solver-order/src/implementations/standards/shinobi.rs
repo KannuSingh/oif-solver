@@ -37,10 +37,10 @@ use std::collections::HashMap;
 /// * `output_settlers` - Map of chain_id -> OutputSettler address
 #[derive(Debug, Clone)]
 pub struct ShinobiOrderImpl {
-	/// Networks configuration
-	networks: NetworksConfig,
-	/// Oracle routes for validation
-	oracle_routes: OracleRoutes,
+	/// Networks configuration (reserved for future oracle validation)
+	_networks: NetworksConfig,
+	/// Oracle routes for validation (reserved for future oracle validation)
+	_oracle_routes: OracleRoutes,
 	/// InputSettler addresses by chain ID
 	input_settlers: HashMap<u64, AlloyAddress>,
 	/// OutputSettler addresses by chain ID
@@ -114,8 +114,8 @@ impl ShinobiOrderImpl {
 		}
 
 		Ok(Self {
-			networks,
-			oracle_routes,
+			_networks: networks,
+			_oracle_routes: oracle_routes,
 			input_settlers,
 			output_settlers,
 		})
@@ -327,7 +327,7 @@ impl OrderInterface for ShinobiOrderImpl {
 		&self,
 		order_bytes: &Bytes,
 		intent_data: &Option<serde_json::Value>,
-		lock_type: &str,
+		_lock_type: &str,
 		order_id_callback: OrderIdCallback,
 		solver_address: &Address,
 	) -> Result<Order, OrderError> {

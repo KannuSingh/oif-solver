@@ -321,7 +321,7 @@ impl SettlementInterface for DirectSettlement {
 			value: U256::ZERO,
 			chain_id: dest_chain,
 			nonce: None,
-			gas_limit: Some(21000),
+			gas_limit: None, // Let provider estimate gas dynamically
 			gas_price: None,
 			max_fee_per_gas: None,
 			max_priority_fee_per_gas: None,
@@ -361,7 +361,7 @@ impl SettlementInterface for DirectSettlement {
 			value: U256::ZERO,
 			chain_id: origin_chain,
 			nonce: None,
-			gas_limit: Some(21000),
+			gas_limit: None, // Let provider estimate gas dynamically
 			gas_price: None,
 			max_fee_per_gas: None,
 			max_priority_fee_per_gas: None,
