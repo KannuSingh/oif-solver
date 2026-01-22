@@ -22,7 +22,7 @@ decimals = 18
 
 [networks."84532"]
 chain_id = 84532
-input_settler_address = "0x9F5f52D0E481BfDA8028F64E7BA2fA76A897237b"
+input_settler_address = "0x5f858C0700E634d795C094F4cc80667D8E873923"
 output_settler_address = "0x621Ca010AE73309cF1FF6E75D53d26BEBCB0cfDe"
 
 [[networks."84532".rpc_urls]]
@@ -76,9 +76,9 @@ network_ids = [421614, 84532]
 [discovery.implementations.shinobi]
 lock_type = "native_escrow"
 polling_interval_secs = 12
-input_settlers = { 421614 = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5", 84532 = "0x9F5f52D0E481BfDA8028F64E7BA2fA76A897237b" }
+input_settlers = { 421614 = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5", 84532 = "0x5f858C0700E634d795C094F4cc80667D8E873923" }
 # Optional: Start blocks for initial historical sync (set to deployment block - 1)
-start_blocks = { 421614 = 22854100, 84532 = 35589200 }
+start_blocks = { 421614 = 235172609, 84532 = 36591300 }
 
 # ============================================================================
 # ORDER
@@ -86,7 +86,7 @@ start_blocks = { 421614 = 22854100, 84532 = 35589200 }
 [order]
 
 [order.implementations.shinobi]
-input_settlers = { 421614 = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5", 84532 = "0x9F5f52D0E481BfDA8028F64E7BA2fA76A897237b" }
+input_settlers = { 421614 = "0x31105923593a7A02F8CDE2e048E0acd178F5e4c5", 84532 = "0x5f858C0700E634d795C094F4cc80667D8E873923" }
 output_settlers = { 421614 = "0x0B44BE1cA20749aa2ac2A4f078188f0E14d9DcA2", 84532 = "0x621Ca010AE73309cF1FF6E75D53d26BEBCB0cfDe" }
 
 [order.strategy]
